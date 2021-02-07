@@ -2,6 +2,7 @@
 #include <string.h>
 #include <linux/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <netdb.h>
@@ -55,7 +56,6 @@ void receive_msg(int fd, char *buf, int buf_size) {
         }
     }
     buf[n_received] = 0;
-    printf("RCV: '%s'\n", buf);
 }
 
 void conversation_client(int sock) {
@@ -64,20 +64,31 @@ void conversation_client(int sock) {
         sprintf(buf, "HELLO %d", i+1);
         send_msg(sock, buf);
         receive_msg(sock, buf, sizeof(buf));
+        printf("RCV: '%s'\n", buf);
+        sleep(5);
     }
 }
 
-void conversation_server(int sock) {
+void conversation_server(int sock, char *client) {
     char buf[1024];
     int n_read = 0;
     while (1) {
         receive_msg(sock, buf, sizeof(buf));
+        printf("RCV from %s: '%s'\n", client, buf);
         if (strlen(buf) == 0) {
             break;
         }
         send_msg(sock, buf);
     }
 }
+
+void forking_conversation_server(int sock, char *client) {
+    if (fork() == 0) {
+        // child
+        conversation_server(sock, client);
+    }
+}
+
 
 void sock_client(char *server) {
     int client_sock;
@@ -122,8 +133,13 @@ void sock_server() {
     listen(server_sock, 5);
     int sock;
     printf("Start serving on port %d\n", SERVER_PORT);
-    while ((sock = accept(server_sock, (struct sockaddr *)NULL, NULL)) >= 0) {
-        conversation_server(sock);
+    struct sockaddr_in client_addr;
+    int client_addr_len = sizeof(client_addr);
+    while ((sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_addr_len)) >= 0) {
+        char client_address[128];
+        sprintf(client_address, "%s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+        //conversation_server(sock);
+        forking_conversation_server(sock, client_address);
         close(sock);
     }
     fatal("Failed to accept a connection");
