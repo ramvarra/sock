@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
-#include <linux/socket.h>
+#include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdarg.h>
@@ -61,7 +62,7 @@ void receive_msg(int fd, char *buf, int buf_size) {
 void conversation_client(int sock) {
     char buf[1024];
     for (int i = 0; i < 10; i++) {
-        sprintf(buf, "HELLO %d", i+1);
+        sprintf(buf, "%d HELLO %d", getpid(), i+1);
         send_msg(sock, buf);
         receive_msg(sock, buf, sizeof(buf));
         printf("RCV: '%s'\n", buf);
@@ -82,14 +83,95 @@ void conversation_server(int sock, char *client) {
     }
 }
 
-void forking_conversation_server(int sock, char *client) {
-    if (fork() == 0) {
-        // child
-        conversation_server(sock, client);
+
+int accept_client_connection(int server_sock, char *client_address) {
+    struct sockaddr_in client_addr;
+    int client_addr_len = sizeof(client_addr);
+    int sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_addr_len);
+    if (sock < 0) {
+        fatal("Accept failed");
+    }    
+    sprintf(client_address, "%s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+    printf("Got connection from: %s\n", client_address);
+    return sock;
+}
+
+void multiplexing_conversation_server(int listen_sock) {
+    printf("Start serving on port %d - multiplexing\n", SERVER_PORT);
+    fd_set in_read_fds, except_fds;
+    FD_ZERO(&in_read_fds);
+    // FD_ZERO(&except_fds);
+
+    FD_SET(listen_sock, &in_read_fds);
+    // FD_SET(server_sock, except_fds);
+    int nfds = listen_sock + 1;
+    while (1) {
+        fd_set out_read_fds = in_read_fds;
+        fd_set out_except_fds = in_read_fds;
+        printf("Waiting for new connection or some activity from clients: \n");
+        int ret = select(nfds, &out_read_fds, NULL, &out_except_fds, NULL);
+        if (ret < 0) {
+            fatal("Select failed");
+        }
+        for (int fd  = 0; fd < nfds; fd++) {
+            if (FD_ISSET(fd, &out_read_fds)) {
+                if (fd == listen_sock) {
+                    printf("listen_sock ready to read... calling accept\n");
+                    char client_address[128];
+                    int client_sock = accept_client_connection(listen_sock, client_address);
+                    // add this for future tracking
+                    FD_SET(client_sock, &in_read_fds);
+                    if (client_sock >= nfds) {
+                        nfds = client_sock + 1;
+                    }
+                } else {
+                    char buf[1024];
+                    // some client has input to read
+                    receive_msg(fd, buf, sizeof(buf));
+                    printf("RCV from %d: '%s'\n", fd, buf);
+                    if (strlen(buf) == 0) {
+                        close(fd);
+                        // client done
+                        FD_CLR(fd, &in_read_fds);
+                    } else {
+                        send_msg(fd, buf);
+                    }
+                }
+            } else {
+                if (FD_ISSET(fd, &out_except_fds)) {
+                    if (fd == listen_sock) {
+                        // we can loose listen_sock
+                        fatal("exception on listen_sock");
+                    } else {
+                        // one of the client went bust. clear it.
+                        close(fd);
+                        FD_CLR(fd, &in_read_fds);
+                        printf("Cleared client sock %d\n", fd);
+                    }
+                }
+            }
+        }
     }
 }
 
-
+void traditional_server(int listen_sock, int forking) {
+    printf("Start serving on port %d - traditional %s\n", SERVER_PORT, forking? "forking" : "non-forking");
+    char client_address[128];
+    int client_sock;
+    while ((client_sock = accept_client_connection(listen_sock, client_address)) >= 0) {
+        if (forking) {
+            if (fork() == 0) {
+                close(listen_sock);
+                conversation_server(client_sock, client_address);
+                close(client_sock);
+            }            
+        } else {
+            conversation_server(client_sock, client_address);            
+        }
+        close(client_sock);
+    }
+}
+    
 void sock_client(char *server) {
     int client_sock;
     struct sockaddr_in server_address;
@@ -116,33 +198,24 @@ void sock_client(char *server) {
     close(client_sock);
 }
 
+
 void sock_server() {
     printf("I am sock server\n");
-    int server_sock;
+    int listen_sock;
     struct sockaddr_in server_address;
 
-    if ((server_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    if ((listen_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         fatal("Failed to create server sock");
     }
     server_address.sin_family = AF_INET;
     server_address.sin_addr.s_addr = htonl(INADDR_ANY);
     server_address.sin_port = htons(SERVER_PORT);
-    if (bind(server_sock, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+    if (bind(listen_sock, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
         fatal("Failed to bind server address to sock");
     }
-    listen(server_sock, 5);
-    int sock;
-    printf("Start serving on port %d\n", SERVER_PORT);
-    struct sockaddr_in client_addr;
-    int client_addr_len = sizeof(client_addr);
-    while ((sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_addr_len)) >= 0) {
-        char client_address[128];
-        sprintf(client_address, "%s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        //conversation_server(sock);
-        forking_conversation_server(sock, client_address);
-        close(sock);
-    }
-    fatal("Failed to accept a connection");
+    listen(listen_sock, 5);
+
+    multiplexing_conversation_server(listen_sock);
 }
 
 int main(int argc, char *argv[]) {
