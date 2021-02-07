@@ -213,9 +213,15 @@ void sock_server() {
     if (bind(listen_sock, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
         fatal("Failed to bind server address to sock");
     }
+
     listen(listen_sock, 5);
 
     multiplexing_conversation_server(listen_sock);
+
+    // alternatives
+    // traditional_server(listen_sock, 1); // forking
+    // traditional_server(listen_sock, 0); // non-forking
+
 }
 
 int main(int argc, char *argv[]) {
