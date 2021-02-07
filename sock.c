@@ -138,7 +138,7 @@ void sock_server() {
     while ((sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_addr_len)) >= 0) {
         char client_address[128];
         sprintf(client_address, "%s:%d", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        //conversation_server(sock);
+        //conversation_server(sock, client_address);
         forking_conversation_server(sock, client_address);
         close(sock);
     }
